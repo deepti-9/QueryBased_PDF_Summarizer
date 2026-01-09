@@ -1,0 +1,10 @@
+langchain
+langchain-core
+langchain-community
+pypdf
+pymupdf
+## for embedding
+sentence-transformers
+#for vector store
+faiss-cpu
+chromadb
