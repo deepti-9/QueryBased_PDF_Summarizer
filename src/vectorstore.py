@@ -4,13 +4,18 @@ import numpy as np
 from typing import List, Any
 import hashlib
 
+from config import (
+    COLLECTION_NAME,
+    VECTOR_STORE_DIR,
+    STORE_BATCH_SIZE,
+)
 
 class VectorStore:
     def __init__(
         self,
-        collection_name: str = "pdf_documents",
-        persist_directory: str = "data/vector_store",
-        batch_size: int = 128
+         collection_name:  str = COLLECTION_NAME,   
+        persist_directory: str = VECTOR_STORE_DIR,
+        batch_size:        int = STORE_BATCH_SIZE,
     ):
         self.collection_name = collection_name
         self.persist_directory = persist_directory
@@ -35,8 +40,8 @@ class VectorStore:
 
         print(f"Vector store ready. Current count: {self.collection.count()}")
 
-    # FIXED: collision-safe ID generation
-    def _generate_stable_id(self, doc, chunk_idx: int):
+    # collision-safe ID generation
+    def _generate_stable_id(self, doc, chunk_idx: int)->str:
         """
         Generate truly unique + stable ID using SHA256
         """
@@ -65,17 +70,17 @@ class VectorStore:
         total = len(documents)
 
         for start in range(0, total, self.batch_size):
-            end = start + self.batch_size
+            end = min(start + self.batch_size,total)
 
             batch_docs = documents[start:end]
             batch_embs = embeddings[start:end]
 
             ids, metadatas, texts, embeddings_list = [], [], [], []
 
-            for idx, (doc, emb) in enumerate(zip(batch_docs, batch_embs)):
-
+            for local_idx, (doc, emb) in enumerate(zip(batch_docs, batch_embs)):
+                global_idx= start+ local_idx
                 # UNIQUE + STABLE ID
-                doc_id = self._generate_stable_id(doc, idx)
+                doc_id = self._generate_stable_id(doc,global_idx)
                 ids.append(doc_id)
 
                 # Clean metadata
@@ -89,7 +94,7 @@ class VectorStore:
 
                 # Add useful metadata
                 clean_meta.update({
-                    "chunk_id": idx,
+                    "chunk_id": global_idx,
                     "content_length": len(doc.page_content),
                     "type": doc.metadata.get("type", "text")
                 })
@@ -112,3 +117,15 @@ class VectorStore:
             print(f"Inserted batch {start} → {min(end, total)}")
 
         print(f"Added/Updated {total} documents.")
+
+    def reset(self):
+        """Delete the collection and recreate it (used by the UI clear button)."""
+        try:
+            self.client.delete_collection(self.collection_name)
+        except Exception:
+            pass
+        self.collection = self.client.get_or_create_collection(
+            name=self.collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+        print("Vector store reset.")

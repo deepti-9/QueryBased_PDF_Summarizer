@@ -1,126 +1,184 @@
-import streamlit as st
+# ============================================================
+# app.py
+# ============================================================
+
 import os
 import time
+import shutil
+
+import streamlit as st
 
 os.environ["HF_TOKEN"] = st.secrets["HF_TOKEN"]
 
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 
-# ✅ Correct imports
 from src.data_loader import PDFProcessor
-from src.embedding import EmbeddingManager
+from src.embedding   import EmbeddingManager
 from src.vectorstore import VectorStore
-from src.rag_system import RAGSystem   # ✅ fixed
+from src.rag_system  import RAGSystem
+from src.image_processor import ImageProcessor
+from config import (         
+    LLM_MODEL,
+    EMBED_BATCH_SIZE,
+    STORE_BATCH_SIZE,
+    PDF_DIR,
+    TOP_K_DEFAULT,
+    SCORE_THRESHOLD,
+)
 
 load_dotenv()
 
-# --- Page Config ---
+# --- Page config ---
 st.set_page_config(page_title="PDF RAG Assistant", layout="wide")
-st.title("📚 Dynamic PDF Summarizer & Q&A")
+st.title("📚 Research Paper Q&A")
 
-# --- Initialize Backend ---
+# --- Backend init ---
 @st.cache_resource
 def init_rag():
-    llm = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct")
-    embeddings = EmbeddingManager(batch_size=64)
-    store = VectorStore(batch_size=128)
-    return RAGSystem(store, embeddings, llm)
+    llm        = ChatGroq(model=LLM_MODEL)          
+    embeddings = EmbeddingManager(batch_size=EMBED_BATCH_SIZE)
+    store      = VectorStore(batch_size=STORE_BATCH_SIZE)
+    image_proc = ImageProcessor()      
+    rag        = RAGSystem(store, embeddings, llm)
+    return rag,image_proc
 
 rag = init_rag()
+rag, image_processor = init_rag()
+
+#  chat history persisted across reruns
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 # --- Sidebar ---
 with st.sidebar:
     st.header("Configuration")
 
-    top_k = st.slider("Top K (Context Chunks)", 1, 10, 5)
-    threshold = st.slider("Similarity Threshold", 0.0, 1.0, 0.35)
+    top_k     = st.slider("Top K (context chunks)", 1, 10, TOP_K_DEFAULT)
+    threshold = st.slider("Similarity threshold",   0.0, 1.0, SCORE_THRESHOLD)
 
     st.markdown("---")
 
     uploaded_files = st.file_uploader(
-        "Upload PDF Documents", type="pdf", accept_multiple_files=True
+        "Upload PDF documents", type="pdf", accept_multiple_files=True
     )
 
-    if st.button("Process & Index Documents"):
+    if st.button("⚡ Process & index documents"):
         if uploaded_files:
+            os.makedirs(PDF_DIR, exist_ok=True)
 
-            os.makedirs("data/pdf_files", exist_ok=True)
-
-            # Save files
             for uploaded_file in uploaded_files:
-                with open(os.path.join("data/pdf_files", uploaded_file.name), "wb") as f:
+                dest = os.path.join(PDF_DIR, uploaded_file.name)
+                with open(dest, "wb") as f:
                     f.write(uploaded_file.getbuffer())
 
-            with st.spinner("⚡ Fast ingestion in progress..."):
-
+            with st.spinner("Ingesting…"):
                 start_total = time.time()
 
-                # ✅ CLEAN (no image dependency)
                 processor = PDFProcessor(
                     llm=rag.llm,
-                    vision_func=None,
-                    process_images=False
+                    vision_func=image_processor.get_image_description,
+                    process_images=True,
                 )
 
-                # Step 1: Extract
-                t1 = time.time()
-                raw_docs = processor.process_pdfs("data/pdf_files")
-                st.info(f"📄 Extracted {len(raw_docs)} docs in {time.time() - t1:.2f}s")
+                t1       = time.time()
+                raw_docs = processor.process_pdfs(PDF_DIR)
+                st.info(f"📄 Extracted {len(raw_docs)} pages in {time.time()-t1:.2f}s")
 
-                # Step 2: Split
-                t2 = time.time()
+                t2     = time.time()
                 chunks = processor.split_documents(raw_docs)
-                st.info(f"✂️ Created {len(chunks)} chunks in {time.time() - t2:.2f}s")
+                st.info(f"✂️ Created {len(chunks)} chunks in {time.time()-t2:.2f}s")
 
-                # Step 3: Embed
-                t3 = time.time()
+                t3       = time.time()
                 contents = [doc.page_content for doc in chunks]
-                embeddings = rag.embedding_manager.generate_embeddings(contents)
-                st.info(f"🧠 Embeddings generated in {time.time() - t3:.2f}s")
 
-                # Validation
+                #  unpack tuple; filter chunks to valid indices only
+                embeddings, valid_indices = rag.embedding_manager.generate_embeddings(contents)
+                chunks = [chunks[i] for i in valid_indices]
+                st.info(f"🧠 Embeddings generated in {time.time()-t3:.2f}s")
+
+                # This assert will now always pass
                 assert len(chunks) == len(embeddings), "Mismatch error!"
 
-                # Step 4: Store
                 t4 = time.time()
                 rag.vector_store.add_documents(chunks, embeddings)
-                st.info(f"💾 Stored in {time.time() - t4:.2f}s")
+                st.info(f"💾 Stored in {time.time()-t4:.2f}s")
 
-                st.success(f"✅ Done in {time.time() - start_total:.2f}s")
-
+                st.success(f"✅ Done in {time.time()-start_total:.2f}s")
         else:
-            st.warning("Please upload a PDF first.")
+            st.warning("Please upload at least one PDF first.")
 
-# --- Chat Interface ---
-query = st.text_input("Ask a question about your documents:")
-submit_button = st.button("Send")
+    st.markdown("---")
 
-if query and submit_button:
-    with st.spinner("Thinking..."):
+    #  clear button so stale PDFs don't pile up across sessions
+    if st.button("🗑️ Clear all documents"):
+        shutil.rmtree(PDF_DIR, ignore_errors=True)
+        os.makedirs(PDF_DIR, exist_ok=True)
+        rag.vector_store.reset()          # uses new reset() method
+        st.session_state.messages = []   # also clear chat history
+        st.success("Cleared. Re-upload your documents.")
 
-        result = rag.ask(query, top_k=top_k, score_threshold=threshold)
+# --- Chat history display ---
+#  render full conversation history on every rerun
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if msg.get("sources"):
+            with st.expander("📚 Source chunks"):
+                for idx, (source, chunk) in enumerate(
+                    zip(msg["sources"], msg["chunks"])
+                ):
+                    st.markdown(
+                        f"**Source {idx+1}** · Page {source.get('page')} "
+                        f"· `{source.get('source_file')}`"
+                    )
+                    #  show actual text the LLM read
+                    st.caption(chunk["content"][:400])
+                    if idx < len(msg["sources"]) - 1:
+                        st.divider()
 
-        st.markdown("### 🤖 Assistant")
-        st.markdown(result['answer'])
+# --- Chat input ---
+#  st.chat_input replaces text_input + button pattern
+prompt = st.chat_input("Ask a question about your documents…")
+if prompt:
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-        st.markdown("---")
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking…"):
+            result = rag.ask(prompt, top_k=top_k, score_threshold=threshold)
+            answer = result["answer"]
 
-        m1, m2, m3, m4 = st.columns(4)
+        st.markdown(answer)
 
-        first_source = result['sources'][0] if result['sources'] else {}
+        # Metrics row
+        if result["sources"]:
+            m1, m2, m3, m4 = st.columns(4)
+            first = result["sources"][0]
+            m1.metric("Author",          first.get("author", "N/A"))
+            m2.metric("Date",            first.get("date",   "N/A"))
+            m3.metric("Relevance score", result["metrics"].get("relevance_score", "0%"))
+            m4.metric("Time taken",      result["metrics"].get("fetch_time",      "0s"))
 
-        m1.metric("Author", first_source.get("author", "N/A"))
-        m2.metric("Date", first_source.get("date", "N/A"))
+        # Source chunks expander
+        if result["sources"]:
+            with st.expander("📚 Source chunks"):
+                for idx, (source, chunk) in enumerate(
+                    zip(result["sources"], result["chunks"])
+                ):
+                    st.markdown(
+                        f"**Source {idx+1}** · Page {source.get('page')} "
+                        f"· `{source.get('source_file')}`"
+                    )
+                    st.caption(chunk["content"][:400])  # ✅ ENHANCEMENT: actual text
+                    if idx < len(result["sources"]) - 1:
+                        st.divider()
 
-        # ✅ FIXED METRIC KEY
-        m3.metric("Relevance Score", result['metrics'].get("relevance_score", "0%"))
-
-        m4.metric("Time Taken", result['metrics'].get("fetch_time", "0s"))
-
-        # Source viewer
-        with st.expander("📚 View All Source Chunks"):
-            for idx, source in enumerate(result['sources']):
-                st.write(
-                    f"📄 **Source {idx+1}** | Page {source.get('page')} | {source.get('source_file')}"
-                )
+    # Persist to session state (include chunks for history re-render)
+    st.session_state.messages.append({
+        "role":    "assistant",
+        "content": answer,
+        "sources": result["sources"],
+        "chunks":  result["chunks"],   # stored for history
+    })

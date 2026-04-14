@@ -1,17 +1,20 @@
 import time
 from typing import List, Dict, Any, Optional
-
+from langchain_core.messages import HumanMessage
+#from sentence_transformers import CrossEncoder
 
 class RAGSystem:
     def __init__(self, vector_store, embedding_manager, llm):
         self.vector_store = vector_store
         self.embedding_manager = embedding_manager
         self.llm = llm
+        #self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
     # Correct distance → similarity conversion
     def _convert_distance_to_score(self, distance: float) -> float:
-        return max(0, 1 - (distance / 2))  # for cosine distance [0,2]
-
+        """Cosine distance [0, 2] → similarity [0, 1]."""
+        return max(0.0, 1.0 - (distance / 2))
+    
     def retrieve(
         self,
         query: str,
@@ -20,17 +23,20 @@ class RAGSystem:
         filter_type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
 
-        query_emb = self.embedding_manager.generate_embeddings([query])[0]
+        embeddings, _ = self.embedding_manager.generate_embeddings([query])
 
+        if len(embeddings) == 0:
+            return []
+        query_emb = embeddings[0]
+ 
         where_clause = {"type": filter_type.lower()} if filter_type else None
-
+ 
         results = self.vector_store.collection.query(
             query_embeddings=[query_emb.tolist()],
             n_results=top_k * 3,
-            where=where_clause
+            where=where_clause,
         )
-
-        retrieved_docs = []
+        retrieved_docs: List[Dict[str, Any]] = []
 
         if results.get("documents") and results["documents"][0]:
 
@@ -39,7 +45,7 @@ class RAGSystem:
                 distance = results["distances"][0][i]
                 score = self._convert_distance_to_score(distance)
 
-                # ✅ REAL filtering (no bypass)
+                #  REAL filtering (no bypass)
                 if score >= score_threshold:
                     retrieved_docs.append({
                         "content": results["documents"][0][i],
@@ -47,7 +53,7 @@ class RAGSystem:
                         "score": round(score, 4)
                     })
 
-        # ✅ Proper sorting
+        #  Proper sorting
         retrieved_docs = sorted(
             retrieved_docs,
             key=lambda x: x["score"],
@@ -56,7 +62,7 @@ class RAGSystem:
 
         return retrieved_docs[:top_k]
 
-    def ask(self, query: str, top_k: int = 5, score_threshold: float = 0.35):
+    def ask(self, query: str, top_k: int = 5, score_threshold: float = 0.35)->Dict[str,Any]:
 
         start_time = time.time()
 
@@ -72,23 +78,26 @@ class RAGSystem:
 
         #  Controlled context (avoid overload)
         context = "\n\n".join(
-            f"[Source {i+1} | Page {d['metadata'].get('page','?')} | File: {d['metadata'].get('source_file','?')}]\n{d['content'][:600]}"
+            f"[Source {i+1} | Page {d['metadata'].get('page','?')} | File: {d['metadata'].get('source_file','?')}]\n{d['content'][:1200]}"
             for i, d in enumerate(docs)
         )
 
         # Strong prompt (LLM guidance)
         prompt = f"""
-You are a precise document question-answering system.
-
+You are an expert research paper assistant.
+ 
+Your job is to give a thorough, detailed answer using ONLY the provided context.
+ 
 Instructions:
-- Answer ONLY using the provided context
-- Do NOT use external knowledge
--Mention page numbers when referencing information
-- If answer is not present, say: "Not found in document"
-- If multiple points exist,  cite like (Page X)
-- Be concise but complete
--- If answer not found, say: "Not found in document"
-
+- Give a COMPLETE and DETAILED answer — do not cut it short.
+- Cover ALL relevant points found across all sources.
+- After every key point cite like this: (Page X, filename).
+- If the same idea appears in multiple sources, mention all of them.
+- Use bullet points or numbered lists for multi-part questions.
+- Include specific values, methods, findings, and conclusions from the text.
+- Do NOT use any knowledge outside the provided context.
+- If the answer is genuinely not present, say: "Not found in document"
+ 
 Context:
 {context}
 
@@ -97,7 +106,8 @@ Question: {query}
 Answer:
 """
 
-        response = self.llm.invoke([prompt])
+        
+        response = self.llm.invoke([HumanMessage(content=prompt)])
         answer = response.content.strip()
 
         if len(answer) < 10:
@@ -108,8 +118,9 @@ Answer:
         return {
             "answer": answer,
             "sources": [d["metadata"] for d in docs],
+            "chunks" : docs,
             "metrics": {
                 "fetch_time": f"{fetch_time:.2f}s",
-                "relevance_score": f"{avg_score * 100:.1f}%"
-            }
+                "relevance_score": f"{avg_score * 100:.1f}%",
+            },
         }

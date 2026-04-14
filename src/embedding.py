@@ -1,11 +1,14 @@
 from sentence_transformers import SentenceTransformer
 import numpy as np
-from typing import List
+from typing import List, Tuple
 import torch
+
+from config import EMBED_MODEL, EMBED_BATCH_SIZE
+ 
 
 
 class EmbeddingManager:
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2", batch_size: int = 128):
+    def __init__(self, model_name: str = EMBED_MODEL, batch_size: int = EMBED_BATCH_SIZE):
         """
         Production-ready embedding manager
         """
@@ -39,34 +42,35 @@ class EmbeddingManager:
         words = text.split()
         return " ".join(words[:max_words])
 
-    def generate_embeddings(self, texts: List[str]) -> np.ndarray:
+    def generate_embeddings(self, texts: List[str])->Tuple[np.ndarray,List[int]]:
+
         """
-        Generate embeddings with:
-        - cleaning
-        - truncation
-        - batching
+        Returns
+        -------
+        embeddings   : np.ndarray  shape (N, dim)
+        valid_indices: List[int]   indices into the original `texts` list
+                                   that were actually embedded (non-empty).
         """
+        processed_texts: List[str] = []
+        valid_indices:   List[int] = []
 
-        processed_texts = []
-
-        for t in texts:
-            if not t or not t.strip():
-                continue  # skip empty safely
-
-            cleaned = self._clean_text(t)
+        for i, t in enumerate(texts):
+            if not t and not t.strip():
+                continue
+            cleaned   = self._clean_text(t)
             truncated = self._safe_truncate(cleaned)
-
             processed_texts.append(truncated)
+            valid_indices.append(i)
 
         if not processed_texts:
-            return np.array([])
+            return np.array([]), []
 
         embeddings = self.model.encode(
             processed_texts,
             batch_size=self.batch_size,
             show_progress_bar=True,
-            normalize_embeddings=True ,
+            normalize_embeddings=True,
             convert_to_numpy=True
         )
 
-        return np.array(embeddings)
+        return np.array(embeddings), valid_indices
