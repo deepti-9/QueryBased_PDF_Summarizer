@@ -11,7 +11,6 @@ An intelligent research paper question-answering system built on a **Retrieval-A
 - Upload one or more research papers in PDF format
 - Ask any natural language question about the content
 - Get a detailed, cited answer referencing the exact **page number** and **source file**
-- Figures, charts, and diagrams are described and indexed alongside text
 - Chat history is preserved across queries in the same session
 
 ---
@@ -216,15 +215,10 @@ torch
 **Deepti Yadav**
 B.Tech Computer Science & Engineering — 3rd Year
 IGDTUW
-DRDO Internship 2025
+
 
 ---
 
-## 📄 License
-
-This project was developed as part of a DRDO internship. All rights reserved.
-
----
 
 ## 🙏 Acknowledgements
 
