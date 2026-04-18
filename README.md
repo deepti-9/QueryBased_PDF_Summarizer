@@ -221,8 +221,6 @@ IGDTUW
 
 
 ## 🙏 Acknowledgements
-
-- [DRDO](https://www.drdo.gov.in) for the internship opportunity
 - [Groq](https://groq.com) for low-latency LLM inference
 - [ChromaDB](https://www.trychroma.com) for the vector store
 - [Hugging Face](https://huggingface.co) for the sentence transformer model
